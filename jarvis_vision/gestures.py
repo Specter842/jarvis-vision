@@ -6,9 +6,8 @@ M2 scope: the thumb-index PINCH with a hysteresis state machine, fed strictly
 from post-smoothing landmarks.
 M5 scope: open-palm "cancel" -- every fingertip spread far from the wrist,
 held briefly.
-
-Later milestones plug in here:
-  * M6 -- two-hand resize (distance between two pinch points inside one icon)
+M6 scope: `two_hand_pinch` -- the raw "two hands are pinching, here is the span
+between their pinch points" signal. icons.py decides which icon it scales.
 """
 
 from __future__ import annotations
@@ -222,6 +221,18 @@ class GestureEngine:
         return "hand@L" if wrist_x < frame_width / 2 else "hand@R"
 
 
-# ---------------------------------------------------------------------------
-# M6 -- two-hand resize detection will live here (not built this milestone).
-# ---------------------------------------------------------------------------
+def two_hand_pinch(
+    gestures: list[HandGesture],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """The two pinch points when exactly two hands are PINCHING, else None.
+
+    This is the whole gesture-side contribution to two-hand resize -- it is
+    icon-agnostic. icons.py checks whether both points started inside one
+    icon's box and does the scaling from the span between them.
+    """
+    points = [
+        g.pinch_point for g in gestures if g.pinch_state is PinchState.PINCHING
+    ]
+    if len(points) != 2:
+        return None
+    return points[0], points[1]

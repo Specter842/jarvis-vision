@@ -109,6 +109,9 @@ ICON_SIZE_PX = (80, 80)
 
 RESIZE_MIN_PX = 40   # two-hand resize clamp, lower bound (M6)
 RESIZE_MAX_PX = 240  # two-hand resize clamp, upper bound (M6)
+# The two pinch points must start at least this far apart to begin a resize --
+# below it the distance ratio is too noisy to scale from.
+RESIZE_MIN_BASELINE_PX = 24
 
 # Grid layout for icons loaded from a folder (M3). Positions are in displayed-
 # frame pixel space and recomputed whenever the frame size is known.
@@ -161,7 +164,8 @@ COLOR_ICON_FILL = (48, 42, 36)          # dark slate
 COLOR_ICON_BORDER = (210, 210, 210)     # light grey
 COLOR_ICON_CORNER = (150, 150, 150)     # folded-corner accent
 COLOR_ICON_LABEL = (255, 255, 255)      # white
-COLOR_ICON_GRABBED_BORDER = (0, 255, 0) # green while grabbed (unused until M4)
+COLOR_ICON_GRABBED_BORDER = (0, 255, 0) # green while grabbed
+COLOR_ICON_RESIZING_BORDER = (255, 0, 200)  # magenta while two-hand resizing (M6)
 ICON_BORDER_THICKNESS_PX = 2
 ICON_CORNER_PX = 14                     # size of the folded corner triangle
 ICON_FILL_ALPHA = 0.55                  # icon card translucency over the feed

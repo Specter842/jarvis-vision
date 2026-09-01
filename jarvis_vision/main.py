@@ -123,16 +123,22 @@ def draw_icon(frame: np.ndarray, icon: FileIcon) -> None:
         fill = np.full_like(roi, config.COLOR_ICON_FILL, dtype=np.uint8)
         cv2.addWeighted(fill, config.ICON_FILL_ALPHA, roi, 1 - config.ICON_FILL_ALPHA, 0, roi)
 
-    border_color = (
-        config.COLOR_ICON_GRABBED_BORDER if icon.grabbed
-        else config.COLOR_ICON_BORDER
-    )
+    if icon.resizing:
+        border_color = config.COLOR_ICON_RESIZING_BORDER
+    elif icon.grabbed:
+        border_color = config.COLOR_ICON_GRABBED_BORDER
+    else:
+        border_color = config.COLOR_ICON_BORDER
     cv2.rectangle(frame, (left, top), (right, bottom), border_color,
                   config.ICON_BORDER_THICKNESS_PX, cv2.LINE_AA)
 
     # Folded top-right corner.
     cv2.line(frame, (right - corner, top), (right, top + corner),
              config.COLOR_ICON_CORNER, config.ICON_BORDER_THICKNESS_PX, cv2.LINE_AA)
+
+    if icon.resizing:
+        _text(frame, f"{int(round(icon.w))}px", (left, top - 8),
+              config.COLOR_ICON_RESIZING_BORDER, config.HUD_FONT_SCALE)
 
     # Filename, centred under the card.
     (text_w, _), _ = cv2.getTextSize(
@@ -279,9 +285,18 @@ def draw_hud(
             f"{len(actions.pending)} action(s) pending -- OPEN PALM or SPACE to cancel",
             (12, y + 4), config.COLOR_PENDING_TEXT, config.HUD_FONT_SCALE,
         )
+        y += 22
+
+    if icon_manager is not None and icon_manager.resizing_icon is not None:
+        ic = icon_manager.resizing_icon
+        _text(
+            frame, f"RESIZING {ic.label}  {int(round(ic.w))}px "
+            f"[{config.RESIZE_MIN_PX}-{config.RESIZE_MAX_PX}]",
+            (12, y + 4), config.COLOR_ICON_RESIZING_BORDER, config.HUD_FONT_SCALE,
+        )
 
     _text(
-        frame, "M5: staged file ops  |  open-palm / SPACE cancels  |  q / ESC quit",
+        frame, "M6: two-hand resize  |  open-palm / SPACE cancels  |  q / ESC quit",
         (12, frame.shape[0] - 14), config.COLOR_TEXT, config.HUD_FONT_SCALE,
     )
 
@@ -418,6 +433,14 @@ def main(argv: list[str] | None = None) -> int:
                 draw_drop_zones(frame, icon_manager, gestures)
                 draw_icons(frame, icon_manager)          # the "desktop"
                 draw_pending(frame, actions.pending, now)
+
+                # Two-hand resize: a bar between the two pinch points.
+                if icon_manager is not None and icon_manager.resizing_icon is not None:
+                    pts = [g.pinch_point for g in gestures
+                           if g.pinch_state is PinchState.PINCHING]
+                    if len(pts) == 2:
+                        cv2.line(frame, tuple(pts[0].astype(int)), tuple(pts[1].astype(int)),
+                                 config.COLOR_ICON_RESIZING_BORDER, 2, cv2.LINE_AA)
 
                 for gesture in gestures:
                     draw_skeleton(frame, gesture.landmarks_px, gesture.handedness)

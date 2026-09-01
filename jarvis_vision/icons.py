@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 import config
-from gestures import HandGesture, PinchState
+from gestures import HandGesture, PinchState, two_hand_pinch
 
 
 @dataclass
@@ -52,6 +52,9 @@ class FileIcon:
     # moved; IconManager drops the icon next frame.
     pending: bool = False
     committed: bool = False
+
+    # Two-hand resize in progress (M6) -- purely a render hint.
+    resizing: bool = False
 
     # Where the icon sat before the current grab, so a cancelled action
     # can put it back exactly.
@@ -112,6 +115,15 @@ class DropZone:
         return left <= px <= right and top <= py <= bottom
 
 
+@dataclass
+class _ResizeSession:
+    """Baseline captured when a two-hand resize begins."""
+
+    icon: FileIcon
+    dist0: float                      # pinch-point separation at entry
+    size0: tuple[float, float]        # (w, h) at entry
+
+
 class IconManager:
     """Owns the icons and drop zones for one folder."""
 
@@ -125,6 +137,7 @@ class IconManager:
         self.drop_zones = drop_zones
         self.source_folder = source_folder
         self.frame_shape: tuple[int, ...] = (0, 0, 0)  # set by layout_grid
+        self._resize: _ResizeSession | None = None     # active two-hand resize
 
     # -- construction -------------------------------------------------------
 
@@ -266,9 +279,24 @@ class IconManager:
 
         Returns the (icon, zone) pairs released over a zone this frame. Still
         no filesystem access -- the caller stages a PendingAction.
+
+        Two-hand resize takes precedence: while both hands pinch an icon it is
+        scaled from the span between the pinch points and no grab/drag runs.
         """
         by_hand = {g.handedness: g for g in gestures}
         drops: list[tuple[FileIcon, DropZone]] = []
+
+        # TWO-HAND RESIZE -- consumes both hands, pre-empts grab/drag.
+        span = two_hand_pinch(gestures)
+        target = self._resize_target(span)
+        if target is not None and span is not None:
+            # Both hands are now the resize; nothing can stay grabbed.
+            for icon in self.icons:
+                if icon.grabbed:
+                    self._release(icon)
+            self._run_resize(target, span[0], span[1])
+            return drops
+        self._end_resize()
 
         # GRAB: a fresh pinch that lands on a free icon.
         for gesture in gestures:
@@ -316,6 +344,68 @@ class IconManager:
         if gone:
             self.icons = [ic for ic in self.icons if not ic.committed]
         return gone
+
+    # -- two-hand resize (M6) -------------------------------------------------
+
+    @property
+    def resizing_icon(self) -> FileIcon | None:
+        return self._resize.icon if self._resize is not None else None
+
+    def _resize_target(
+        self, span: tuple[np.ndarray, np.ndarray] | None
+    ) -> FileIcon | None:
+        """The icon a two-hand resize applies to this frame, or None.
+
+        An in-progress resize continues as long as both hands keep pinching.
+        A fresh resize starts only when both pinch points sit inside one icon's
+        box and are at least RESIZE_MIN_BASELINE_PX apart.
+        """
+        if span is None:
+            return None
+        pa, pb = span
+
+        if (
+            self._resize is not None
+            and self._resize.icon in self.icons
+            and not self._resize.icon.locked
+        ):
+            return self._resize.icon
+
+        if float(np.hypot(*(pa - pb))) < config.RESIZE_MIN_BASELINE_PX:
+            return None
+        for icon in reversed(self.icons):
+            if not icon.locked and icon.contains(pa) and icon.contains(pb):
+                return icon
+        return None
+
+    def _run_resize(self, icon: FileIcon, pa: np.ndarray, pb: np.ndarray) -> None:
+        dist = float(np.hypot(*(pa - pb)))
+        mid = (np.asarray(pa) + np.asarray(pb)) * 0.5
+
+        if self._resize is None or self._resize.icon is not icon:
+            # Entry: drop any grab on this icon and capture the baseline.
+            icon.grabbed = False
+            icon.grabbed_by = None
+            icon.resizing = True
+            self._raise_to_top(icon)
+            self._resize = _ResizeSession(
+                icon=icon, dist0=max(dist, 1.0), size0=(icon.w, icon.h)
+            )
+
+        factor = dist / self._resize.dist0
+        w = float(np.clip(self._resize.size0[0] * factor,
+                          config.RESIZE_MIN_PX, config.RESIZE_MAX_PX))
+        h = float(np.clip(self._resize.size0[1] * factor,
+                          config.RESIZE_MIN_PX, config.RESIZE_MAX_PX))
+        icon.w, icon.h = w, h
+        icon.x, icon.y = self._clamp(mid[0] - w / 2.0, mid[1] - h / 2.0, icon)
+
+    def _end_resize(self) -> None:
+        if self._resize is None:
+            return
+        self._resize.icon.resizing = False
+        self._resize.icon.home = (self._resize.icon.x, self._resize.icon.y)
+        self._resize = None
 
     def _release(self, icon: FileIcon) -> None:
         icon.grabbed = False

@@ -39,9 +39,10 @@ zoo; the exact URL is also recorded in [`jarvis_vision/config.py`](jarvis_vision
 Each file in the folder becomes a draggable icon; each sub-folder becomes a
 "move here" drop zone, alongside a fixed trash zone. Pinch an icon onto a zone
 and a countdown starts — let it finish to move/quarantine the real file, or
-cancel with an open-palm hold (or `Space`). The folder argument is optional —
-without it you get the hand-tracking / pinch demo with no icons. Quit with `q`
-or `Esc`.
+cancel with an open-palm hold (or `Space`). Pinch the **same icon with both
+hands** and move your hands apart / together to resize it. The folder argument
+is optional — without it you get the hand-tracking / pinch demo with no icons.
+Quit with `q` or `Esc`.
 
 ## Architecture
 
@@ -51,8 +52,8 @@ or `Esc`.
 | `config.py` | every tunable constant — nothing hardcoded elsewhere |
 | `hand_tracker.py` | MediaPipe Tasks wrapper: frame in → list of hand landmark sets out |
 | `smoothing.py` | EMA smoothing (one instance per tracked landmark, per hand) |
-| `gestures.py` | pinch detection + hysteresis state machine, open-palm cancel |
-| `icons.py` | `FileIcon` + `DropZone` + `IconManager` — layout, hit-testing, grab/drag/release |
+| `gestures.py` | pinch detection + hysteresis, open-palm cancel, two-hand-pinch span |
+| `icons.py` | `FileIcon` + `DropZone` + `IconManager` — layout, hit-testing, grab/drag/release, two-hand resize |
 | `actions.py` | staged-action queue, pending-HUD, commit / cancel / audit log |
 
 ### Pinch, with hysteresis
@@ -88,7 +89,7 @@ path, destination path.
 - [x] **M3** — file icons from a real folder (visualization only)
 - [x] **M4** — drag (screen position only, no filesystem writes)
 - [x] **M5** — real file operations through the staged-action safety layer
-- [ ] **M6** — two-hand resize
+- [x] **M6** — two-hand resize
 - [ ] **M7** — polish: 5+ files, FPS logging, threshold tuning
 
 ## Phase 2 (out of scope for v0.1)

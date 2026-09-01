@@ -1,29 +1,29 @@
 """
 Staged-action safety layer.
 
-    >>> STUB <<<  Structure only. Nothing here touches the filesystem yet.
-    The shapes are frozen now so Milestone 5 is a fill-in, not a rewrite.
+A drop over a valid zone does NOT touch the filesystem. It stages a
+`PendingAction` with a visible countdown (config.PENDING_ACTION_SECONDS). If it
+is not cancelled before the countdown hits zero, it commits:
 
-Intended behaviour (built in M5, from the build spec):
+    MOVE       -> shutil.move(icon.real_path, dest_dir / filename)
+    QUARANTINE -> shutil.move(icon.real_path, QUARANTINE_DIR / filename)
 
-  * A drop over a valid zone creates a PendingAction. The filesystem is NOT
-    touched at drop time.
-  * The PendingAction renders a yellow highlight + a countdown starting at
-    config.PENDING_ACTION_SECONDS.
-  * Cancelled before the countdown hits 0 (open-palm hold, or the spacebar
-    dev/testing fallback) -> discard it, nothing written to disk or log.
-  * Countdown reaches 0 -> commit:
-        MOVE       -> shutil.move(icon.real_path, dest_folder / filename)
-        QUARANTINE -> shutil.move(icon.real_path, quarantine / filename)
-    QUARANTINE is a soft delete: never os.remove, never a real delete, ever,
-    in v0.1.
-  * On commit, append one line to config.ACTIONS_LOG_PATH:
-        <ISO-8601 timestamp>\t<action_type>\t<source path>\t<dest path>
+QUARANTINE is a soft delete -- never os.remove, never a real delete, ever, in
+v0.1. Every commit appends one tab-separated line to actions.log:
+
+    <ISO-8601 timestamp>\t<action_type>\t<source path>\t<dest path>
+
+Cancel (open-palm hold, or the spacebar dev fallback) discards every pending
+action, snaps its icon back to where it was picked up, and writes nothing.
 """
 
 from __future__ import annotations
 
+import shutil
+import sys
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,9 +31,6 @@ from typing import TYPE_CHECKING
 import config
 
 if TYPE_CHECKING:
-    # icons.py arrives in M3. The annotation is a string under
-    # `from __future__ import annotations`, so this import never runs at
-    # runtime and the stub imports cleanly today.
     from icons import FileIcon
 
 
@@ -46,6 +43,7 @@ class HudState(str, Enum):
     COUNTING_DOWN = "counting_down"
     COMMITTED = "committed"
     CANCELLED = "cancelled"
+    FAILED = "failed"          # commit raised (e.g. source vanished); nothing logged
 
 
 @dataclass
@@ -58,25 +56,19 @@ class PendingAction:
 
     icon: "FileIcon"
     action_type: ActionType
-    dest_path: Path
+    dest_path: Path                         # full final path, including filename
     created_at: float                       # time.perf_counter() stamp
     hud_state: HudState = HudState.COUNTING_DOWN
 
-    # -- M5 --------------------------------------------------------------
     def seconds_remaining(self, now: float) -> float:
-        raise NotImplementedError("M5: PENDING_ACTION_SECONDS - (now - created_at)")
+        return max(0.0, config.PENDING_ACTION_SECONDS - (now - self.created_at))
 
     def is_expired(self, now: float) -> bool:
-        raise NotImplementedError("M5: seconds_remaining(now) <= 0")
+        return (now - self.created_at) >= config.PENDING_ACTION_SECONDS
 
 
 class ActionManager:
-    """Owns the pending-action queue and the commit / cancel / log lifecycle.
-
-    STUB: every mutating method raises or no-ops until M5. `pending` and
-    `update()` are safe to call now so main.py can wire the render + tick loop
-    ahead of time.
-    """
+    """Owns the pending-action queue and the commit / cancel / log lifecycle."""
 
     def __init__(self) -> None:
         self._pending: list[PendingAction] = []
@@ -90,38 +82,93 @@ class ActionManager:
     def has_pending(self) -> bool:
         return bool(self._pending)
 
-    # -- M5 ------------------------------------------------------------------
+    # -- staging -----------------------------------------------------------
 
     def stage(
         self,
         icon: "FileIcon",
-        action_type: ActionType,
-        dest_path: Path,
+        action_type: str | ActionType,
+        dest_dir: Path,
     ) -> PendingAction:
         """Create + enqueue a PendingAction. Does NOT touch disk."""
-        raise NotImplementedError("M5")
+        at = ActionType(action_type)
+        dest_path = _unique_destination(Path(dest_dir), icon.real_path.name)
+        action = PendingAction(
+            icon=icon,
+            action_type=at,
+            dest_path=dest_path,
+            created_at=time.perf_counter(),
+        )
+        icon.pending = True
+        self._pending.append(action)
+        return action
 
-    def cancel_all(self) -> None:
-        """Discard every pending action. Nothing written to disk or log."""
-        raise NotImplementedError("M5")
+    # -- cancel ----------------------------------------------------------------
+
+    def cancel_all(self) -> int:
+        """Discard every pending action; snap each icon home. Returns the count."""
+        if not self._pending:
+            return 0
+        n = len(self._pending)
+        for action in self._pending:
+            action.hud_state = HudState.CANCELLED
+            action.icon.pending = False
+            if action.icon.home is not None:
+                action.icon.x, action.icon.y = action.icon.home
+        self._pending.clear()
+        return n
+
+    # -- tick ----------------------------------------------------------------
 
     def update(self, now: float) -> None:
-        """Tick countdowns; commit whatever expired; drop finished entries.
+        """Commit whatever expired this frame; keep the rest counting down."""
+        survivors: list[PendingAction] = []
+        for action in self._pending:
+            if action.is_expired(now):
+                self._commit(action)
+            else:
+                survivors.append(action)
+        self._pending = survivors
 
-        No-op until M5 so the main loop can call it unconditionally.
-        """
-        # M5: for action in list(self._pending):
-        #         if action.is_expired(now): self._commit(action)
-        #     then drop COMMITTED / CANCELLED entries.
-        return None
+    # -- commit ----------------------------------------------------------------
 
     def _commit(self, action: PendingAction) -> None:
-        """shutil.move per action_type, then append the log line."""
-        # M5: MOVE / QUARANTINE both via shutil.move (never os.remove),
-        #     then self._append_log(...).
-        raise NotImplementedError("M5")
+        src = Path(action.icon.real_path)
+        dest = action.dest_path
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+        except OSError as exc:
+            action.hud_state = HudState.FAILED
+            action.icon.pending = False
+            print(f"[jarvis-vision] action failed: {src} -> {dest}: {exc}", file=sys.stderr)
+            return
+
+        action.hud_state = HudState.COMMITTED
+        action.icon.pending = False
+        action.icon.committed = True
+        self._append_log(action.action_type, src, dest)
 
     def _append_log(self, action_type: ActionType, src: Path, dest: Path) -> None:
-        """Append one tab-separated audit line to config.ACTIONS_LOG_PATH."""
-        # M5: f"{datetime.now().isoformat()}\t{action_type.value}\t{src}\t{dest}\n"
-        raise NotImplementedError("M5")
+        line = "\t".join(
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                action_type.value,
+                str(src),
+                str(dest),
+            )
+        ) + "\n"
+        with open(config.ACTIONS_LOG_PATH, "a", encoding="utf-8") as handle:
+            handle.write(line)
+
+
+def _unique_destination(dest_dir: Path, name: str) -> Path:
+    """A path inside `dest_dir` that does not already exist -- never clobber."""
+    candidate = dest_dir / name
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    i = 1
+    while (dest_dir / f"{stem} ({i}){suffix}").exists():
+        i += 1
+    return dest_dir / f"{stem} ({i}){suffix}"

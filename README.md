@@ -36,9 +36,12 @@ zoo; the exact URL is also recorded in [`jarvis_vision/config.py`](jarvis_vision
 .venv\Scripts\python jarvis_vision\main.py "C:\path\to\a\folder"
 ```
 
-Each file in the folder becomes a draggable icon. The folder argument is
-optional — without it you get the hand-tracking / pinch demo with no icons.
-Quit with `q` or `Esc`.
+Each file in the folder becomes a draggable icon; each sub-folder becomes a
+"move here" drop zone, alongside a fixed trash zone. Pinch an icon onto a zone
+and a countdown starts — let it finish to move/quarantine the real file, or
+cancel with an open-palm hold (or `Space`). The folder argument is optional —
+without it you get the hand-tracking / pinch demo with no icons. Quit with `q`
+or `Esc`.
 
 ## Architecture
 
@@ -48,8 +51,8 @@ Quit with `q` or `Esc`.
 | `config.py` | every tunable constant — nothing hardcoded elsewhere |
 | `hand_tracker.py` | MediaPipe Tasks wrapper: frame in → list of hand landmark sets out |
 | `smoothing.py` | EMA smoothing (one instance per tracked landmark, per hand) |
-| `gestures.py` | pinch detection, hysteresis state machine |
-| `icons.py` | `FileIcon` + `IconManager` — layout, hit-testing, grab/drag/release |
+| `gestures.py` | pinch detection + hysteresis state machine, open-palm cancel |
+| `icons.py` | `FileIcon` + `DropZone` + `IconManager` — layout, hit-testing, grab/drag/release |
 | `actions.py` | staged-action queue, pending-HUD, commit / cancel / audit log |
 
 ### Pinch, with hysteresis
@@ -84,7 +87,7 @@ path, destination path.
 - [x] **M2** — pinch detection + hysteresis + EMA smoothing, on-screen state indicator
 - [x] **M3** — file icons from a real folder (visualization only)
 - [x] **M4** — drag (screen position only, no filesystem writes)
-- [ ] **M5** — real file operations through the staged-action safety layer
+- [x] **M5** — real file operations through the staged-action safety layer
 - [ ] **M6** — two-hand resize
 - [ ] **M7** — polish: 5+ files, FPS logging, threshold tuning
 

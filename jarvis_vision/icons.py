@@ -1,13 +1,16 @@
 """
-File icons: one on-screen card per real file in a folder.
+File icons and drop zones: one on-screen card per real file in a folder, plus
+the targets you can drop them on.
 
 `FileIcon` is the data for a single card -- where it sits, how big it is, which
-real file it stands for, and whether a hand is holding it.
-`IconManager` scans a folder, lays the cards out in a grid, answers "which icon
-is under this point?", and runs the grab / drag / release cycle each frame.
+real file it stands for, and whether a hand is holding it / an action is staged.
+`DropZone` is a folder ("move here") or the trash ("quarantine") target.
+`IconManager` scans a folder, lays cards and zones out, answers "which icon /
+zone is under this point?", and runs the grab / drag / release cycle each frame.
 
-M4 scope: drag by pinch -- screen position only. Nothing here touches a file;
-drop zones and real file ops are M5, two-hand resize is M6.
+M5 scope: on release over a valid zone, report the drop so the caller can stage
+a `PendingAction`. This module still never touches the filesystem -- `actions.py`
+does that, only after the safety countdown.
 """
 
 from __future__ import annotations
@@ -44,7 +47,13 @@ class FileIcon:
     # hands can drag two different icons at once.
     grabbed_by: str | None = None
 
-    # Where the icon sat before the current grab, so a cancelled action (M5)
+    # Safety-layer state (M5). `pending` = a PendingAction is counting down for
+    # this icon (locked, cannot be re-grabbed). `committed` = the file has been
+    # moved; IconManager drops the icon next frame.
+    pending: bool = False
+    committed: bool = False
+
+    # Where the icon sat before the current grab, so a cancelled action
     # can put it back exactly.
     home: tuple[float, float] | None = None
 
@@ -69,12 +78,51 @@ class FileIcon:
         left, top, right, bottom = self.bbox
         return left <= px <= right and top <= py <= bottom
 
+    @property
+    def locked(self) -> bool:
+        """Cannot be grabbed -- a countdown is running or the file is gone."""
+        return self.pending or self.committed
+
+
+@dataclass
+class DropZone:
+    """A place a file icon can be dropped to stage a real action."""
+
+    kind: str            # "folder" | "trash"
+    action_type: str     # "move" | "quarantine"  (matches actions.ActionType)
+    dest_dir: Path       # directory the file is moved into on commit
+    label: str
+
+    x: float
+    y: float
+    w: float
+    h: float
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return (self.x + self.w / 2.0, self.y + self.h / 2.0)
+
+    def contains(self, point) -> bool:
+        px, py = float(point[0]), float(point[1])
+        left, top, right, bottom = self.bbox
+        return left <= px <= right and top <= py <= bottom
+
 
 class IconManager:
-    """Owns the set of icons for one folder."""
+    """Owns the icons and drop zones for one folder."""
 
-    def __init__(self, icons: list[FileIcon], source_folder: Path) -> None:
+    def __init__(
+        self,
+        icons: list[FileIcon],
+        drop_zones: list[DropZone],
+        source_folder: Path,
+    ) -> None:
         self.icons = icons
+        self.drop_zones = drop_zones
         self.source_folder = source_folder
         self.frame_shape: tuple[int, ...] = (0, 0, 0)  # set by layout_grid
 
@@ -84,17 +132,22 @@ class IconManager:
     def from_folder(
         cls, folder: Path, frame_shape: tuple[int, ...]
     ) -> "IconManager":
-        """Build one icon per regular file directly inside `folder`.
+        """Build one icon per regular file, one drop zone per sub-folder, plus
+        the trash zone.
 
-        Non-recursive, files only (sub-folders become drop targets in M5, not
-        icons). Sorted by name for a stable, repeatable layout.
+        Non-recursive. Files and sub-folders are sorted by name for a stable,
+        repeatable layout.
         """
         folder = Path(folder).expanduser().resolve()
         if not folder.is_dir():
             raise NotADirectoryError(f"{folder} is not a folder")
 
-        entries = sorted(
+        files = sorted(
             (p for p in folder.iterdir() if p.is_file()),
+            key=lambda p: p.name.lower(),
+        )
+        subdirs = sorted(
+            (p for p in folder.iterdir() if p.is_dir()),
             key=lambda p: p.name.lower(),
         )
 
@@ -105,17 +158,34 @@ class IconManager:
                 label=_fit_label(p.name, config.ICON_LABEL_MAX_CHARS),
                 x=0.0, y=0.0, w=float(iw), h=float(ih),
             )
-            for p in entries
+            for p in files
         ]
 
-        manager = cls(icons, folder)
+        zw, zh = config.DROP_ZONE_SIZE_PX
+        drop_zones = [
+            DropZone(
+                kind="folder", action_type="move", dest_dir=d,
+                label=_fit_label(d.name, config.ICON_LABEL_MAX_CHARS),
+                x=0.0, y=0.0, w=float(zw), h=float(zh),
+            )
+            for d in subdirs[: config.MAX_FOLDER_DROP_ZONES]
+        ]
+        drop_zones.append(
+            DropZone(
+                kind="trash", action_type="quarantine",
+                dest_dir=config.QUARANTINE_DIR, label="QUARANTINE",
+                x=0.0, y=0.0, w=float(zw), h=float(zh),
+            )
+        )
+
+        manager = cls(icons, drop_zones, folder)
         manager.layout_grid(frame_shape)
         return manager
 
     # -- layout ----------------------------------------------------------------
 
     def layout_grid(self, frame_shape: tuple[int, ...]) -> None:
-        """Place icons left-to-right, top-to-bottom in a grid that fits the frame width."""
+        """Place icons in a top-left grid and drop zones in a bottom band."""
         self.frame_shape = frame_shape
         frame_h, frame_w = frame_shape[0], frame_shape[1]
 
@@ -138,23 +208,51 @@ class IconManager:
             icon.h = float(ih)
             icon.home = (icon.x, icon.y)
 
+        self._layout_drop_zones(frame_shape)
+
+    def _layout_drop_zones(self, frame_shape: tuple[int, ...]) -> None:
+        """A single row along the bottom: folders from the left, trash last."""
+        frame_h, frame_w = frame_shape[0], frame_shape[1]
+        zw, zh = config.DROP_ZONE_SIZE_PX
+        gap = config.DROP_ZONE_GAP_PX
+        side = config.DROP_ZONE_SIDE_MARGIN_PX
+        y = float(frame_h - config.DROP_ZONE_BOTTOM_MARGIN_PX - zh)
+
+        x = float(side)
+        for zone in self.drop_zones:
+            zone.w, zone.h, zone.y = float(zw), float(zh), y
+            if zone.kind == "trash":
+                zone.x = float(max(x, frame_w - side - zw))
+            else:
+                zone.x = x
+                x += zw + gap
+
     # -- queries -------------------------------------------------------------
 
     def hit_test(self, point) -> FileIcon | None:
-        """Topmost icon whose box contains `point`, or None.
+        """Topmost grab-able icon whose box contains `point`, or None.
 
         Iterates back-to-front so the last-drawn (visually on top) icon wins
         when boxes overlap. Grabbed icons are moved to the end of the list, so
         they win ties both here and on screen.
         """
         for icon in reversed(self.icons):
-            if icon.contains(point):
+            if not icon.locked and icon.contains(point):
                 return icon
+        return None
+
+    def drop_zone_at(self, point) -> DropZone | None:
+        """The drop zone whose box contains `point`, or None."""
+        for zone in self.drop_zones:
+            if zone.contains(point):
+                return zone
         return None
 
     # -- grab / drag / release --------------------------------------------
 
-    def apply_gestures(self, gestures: list[HandGesture]) -> None:
+    def apply_gestures(
+        self, gestures: list[HandGesture]
+    ) -> list[tuple[FileIcon, DropZone]]:
         """Run one frame of the grab -> drag -> release cycle.
 
         Rules (from the build spec):
@@ -162,12 +260,15 @@ class IconManager:
                      on a free icon, mark it grabbed and store the offset from
                      the icon origin to the pinch point.
           DRAG    -- while grabbed, icon origin = pinch point - stored offset.
-          RELEASE -- on PINCHING->IDLE, drop the icon where it is. (M5 will
-                     check drop zones here and maybe stage a PendingAction.)
+          RELEASE -- on PINCHING->IDLE: if the icon's centre is over a drop
+                     zone, hand it back for staging (icon stays put, locked);
+                     otherwise drop it where it is.
 
-        No filesystem access. Positions are transient -- they reset on restart.
+        Returns the (icon, zone) pairs released over a zone this frame. Still
+        no filesystem access -- the caller stages a PendingAction.
         """
         by_hand = {g.handedness: g for g in gestures}
+        drops: list[tuple[FileIcon, DropZone]] = []
 
         # GRAB: a fresh pinch that lands on a free icon.
         for gesture in gestures:
@@ -195,13 +296,26 @@ class IconManager:
                 continue
 
             if gesture.just_released or gesture.pinch_state is PinchState.IDLE:
-                # M5: inspect drop zones with icon at this final position.
-                self._release(icon)
+                zone = self.drop_zone_at(icon.center)
+                icon.grabbed = False
+                icon.grabbed_by = None
+                if zone is not None:
+                    icon.pending = True  # locked until commit or cancel
+                    drops.append((icon, zone))
                 continue
 
             px, py = float(gesture.pinch_point[0]), float(gesture.pinch_point[1])
             ox, oy = icon.grab_offset
             icon.x, icon.y = self._clamp(px - ox, py - oy, icon)
+
+        return drops
+
+    def remove_committed(self) -> list[FileIcon]:
+        """Drop icons whose file has been moved. Returns the removed icons."""
+        gone = [ic for ic in self.icons if ic.committed]
+        if gone:
+            self.icons = [ic for ic in self.icons if not ic.committed]
+        return gone
 
     def _release(self, icon: FileIcon) -> None:
         icon.grabbed = False

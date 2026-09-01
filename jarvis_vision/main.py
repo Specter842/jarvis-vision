@@ -1,16 +1,20 @@
 """
-JARVIS-Vision v0.1 -- Milestone 3: file icons from a real folder (view only).
+JARVIS-Vision v0.1 -- Milestone 5: real file operations via the safety layer.
 
 Top-level orchestration only: open the camera, pump frames through the hand
-tracker and the gesture engine, draw the result, show it. No file operations
-and no interaction with the icons yet -- actions.py and the icon hit-testing
-are wired but inert this milestone.
+tracker and the gesture engine, run the grab/drag/release cycle, tick the
+staged-action queue, draw everything, show it.
+
+Drop a file icon on a folder zone or the trash zone and a yellow countdown
+starts. Let it reach zero and the real file moves (folder) or is quarantined
+(trash) -- logged to actions.log. Cancel before zero with an open-palm hold or
+the SPACE key and nothing happens.
 
 Run:
     .venv\\Scripts\\python jarvis_vision\\main.py PATH\\TO\\FOLDER
 
-The folder argument is optional; without it you get the M2 pinch demo with no
-icons.
+The folder argument is optional; without it you get the pinch demo with no
+icons. Sub-folders of the given folder become "move" drop zones.
 
 Quit with `q` or ESC.
 """
@@ -26,7 +30,7 @@ import cv2
 import numpy as np
 
 import config
-from actions import ActionManager
+from actions import ActionManager, HudState, PendingAction
 from gestures import GestureEngine, HandGesture, PinchState
 from icons import FileIcon, IconManager
 
@@ -146,11 +150,92 @@ def draw_icons(frame: np.ndarray, icon_manager: IconManager | None) -> None:
         draw_icon(frame, icon)
 
 
+def _translucent_rect(frame: np.ndarray, bbox, color, alpha: float) -> None:
+    left, top, right, bottom = (int(round(v)) for v in bbox)
+    roi = frame[max(top, 0):max(bottom, 0), max(left, 0):max(right, 0)]
+    if roi.size:
+        fill = np.full_like(roi, color, dtype=np.uint8)
+        cv2.addWeighted(fill, alpha, roi, 1 - alpha, 0, roi)
+
+
+def draw_drop_zones(
+    frame: np.ndarray,
+    icon_manager: IconManager | None,
+    gestures: list[HandGesture],
+) -> None:
+    """Folder zones (blue) + trash zone (red); cyan while a grabbed icon hovers."""
+    if icon_manager is None:
+        return
+
+    hovered = {
+        id(icon_manager.drop_zone_at(ic.center))
+        for ic in icon_manager
+        if ic.grabbed
+    }
+
+    for zone in icon_manager.drop_zones:
+        base = (
+            config.COLOR_DROP_TRASH if zone.kind == "trash"
+            else config.COLOR_DROP_FOLDER
+        )
+        hot = id(zone) in hovered
+        color = config.COLOR_DROP_ZONE_HOT if hot else base
+
+        _translucent_rect(frame, zone.bbox, color, config.DROP_ZONE_FILL_ALPHA)
+        left, top, right, bottom = (int(round(v)) for v in zone.bbox)
+        cv2.rectangle(frame, (left, top), (right, bottom), color,
+                      config.DROP_ZONE_BORDER_PX + (1 if hot else 0), cv2.LINE_AA)
+
+        verb = "quarantine" if zone.kind == "trash" else "move here"
+        (tw, _), _ = cv2.getTextSize(
+            zone.label, cv2.FONT_HERSHEY_SIMPLEX, config.HUD_FONT_SCALE, config.FONT_THICKNESS
+        )
+        _text(frame, zone.label, (int(zone.center[0] - tw / 2), top + 26),
+              config.COLOR_DROP_ZONE_LABEL, config.HUD_FONT_SCALE)
+        (vw, _), _ = cv2.getTextSize(
+            verb, cv2.FONT_HERSHEY_SIMPLEX, config.HUD_FONT_SCALE * 0.8, config.FONT_THICKNESS
+        )
+        _text(frame, verb, (int(zone.center[0] - vw / 2), bottom - 12),
+              config.COLOR_DROP_ZONE_LABEL, config.HUD_FONT_SCALE * 0.8)
+
+
+def draw_pending(frame: np.ndarray, actions: list[PendingAction], now: float) -> None:
+    """Yellow highlight box + numeric countdown on top of each staged icon."""
+    for action in actions:
+        if action.hud_state is not HudState.COUNTING_DOWN:
+            continue
+        icon = action.icon
+        pad = config.PENDING_BOX_INFLATE_PX
+        left, top, right, bottom = icon.bbox
+        cv2.rectangle(
+            frame,
+            (int(left - pad), int(top - pad)),
+            (int(right + pad), int(bottom + pad)),
+            config.COLOR_PENDING_BOX, config.PENDING_BOX_THICKNESS_PX, cv2.LINE_AA,
+        )
+
+        secs = f"{action.seconds_remaining(now):.1f}"
+        (tw, th), _ = cv2.getTextSize(
+            secs, cv2.FONT_HERSHEY_SIMPLEX, config.PENDING_COUNTDOWN_FONT_SCALE, 2
+        )
+        cx, cy = icon.center
+        _text(frame, secs, (int(cx - tw / 2), int(cy + th / 2)),
+              config.COLOR_PENDING_TEXT, config.PENDING_COUNTDOWN_FONT_SCALE)
+
+        caption = f"{action.action_type.value} -> {action.dest_path.parent.name}"
+        (cw, _), _ = cv2.getTextSize(
+            caption, cv2.FONT_HERSHEY_SIMPLEX, config.HUD_FONT_SCALE, config.FONT_THICKNESS
+        )
+        _text(frame, caption, (int(cx - cw / 2), int(top - pad - 8)),
+              config.COLOR_PENDING_TEXT, config.HUD_FONT_SCALE)
+
+
 def draw_hud(
     frame: np.ndarray,
     fps: float,
     gestures: list[HandGesture],
     icon_manager: IconManager | None,
+    actions: ActionManager,
 ) -> None:
     """Top-left status readout + milestone banner."""
     _text(frame, f"FPS {fps:5.1f}", (12, 26), config.COLOR_TEXT, config.HUD_FONT_SCALE)
@@ -178,15 +263,25 @@ def draw_hud(
     for gesture in gestures:
         pinching = gesture.pinch_state is PinchState.PINCHING
         color = config.COLOR_PINCH_ACTIVE if pinching else config.COLOR_TEXT
+        tag = "  OPEN-PALM" if gesture.open_palm else ""
         _text(
             frame,
-            f"{gesture.handedness:<5} {gesture.pinch_state.value:<9} {gesture.pinch_distance:4.0f}px",
-            (12, y), color, config.HUD_FONT_SCALE,
+            f"{gesture.handedness:<5} {gesture.pinch_state.value:<9} {gesture.pinch_distance:4.0f}px{tag}",
+            (12, y),
+            config.COLOR_PENDING_TEXT if gesture.open_palm else color,
+            config.HUD_FONT_SCALE,
         )
         y += 22
 
+    if actions.has_pending:
+        _text(
+            frame,
+            f"{len(actions.pending)} action(s) pending -- OPEN PALM or SPACE to cancel",
+            (12, y + 4), config.COLOR_PENDING_TEXT, config.HUD_FONT_SCALE,
+        )
+
     _text(
-        frame, "M4: drag (screen only, no file writes)  |  q / ESC to quit",
+        frame, "M5: staged file ops  |  open-palm / SPACE cancels  |  q / ESC quit",
         (12, frame.shape[0] - 14), config.COLOR_TEXT, config.HUD_FONT_SCALE,
     )
 
@@ -262,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[jarvis-vision] mirror={config.MIRROR_FRAME} swap_handedness={config.SWAP_HANDEDNESS}")
 
     engine = GestureEngine()
-    actions = ActionManager()  # instantiated to prove the wiring; no-op until M5
+    actions = ActionManager()
     icon_manager: IconManager | None = None  # built on the first frame, once size is known
 
     fps = 0.0
@@ -294,24 +389,40 @@ def main(argv: list[str] | None = None) -> int:
                     icon_manager = IconManager.from_folder(folder, frame.shape)
                     print(f"[jarvis-vision] loaded {len(icon_manager)} icons from {folder}")
 
-                timestamp_ms = int((time.perf_counter() - start_time) * 1000)
+                now = time.perf_counter()
+                timestamp_ms = int((now - start_time) * 1000)
                 hands = tracker.process(frame, timestamp_ms)
-                gestures = engine.update(hands, frame.shape)
+                gestures = engine.update(hands, frame.shape, now)
 
-                # Grab / drag / release. Screen position only -- no file writes.
+                # Grab / drag / release. A release over a drop zone comes back
+                # as (icon, zone) -- stage it, but do NOT touch the filesystem.
                 if icon_manager is not None:
-                    icon_manager.apply_gestures(gestures)
+                    for icon, zone in icon_manager.apply_gestures(gestures):
+                        action = actions.stage(icon, zone.action_type, zone.dest_dir)
+                        print(f"[jarvis-vision] staged {action.action_type.value}: "
+                              f"{icon.real_path.name} -> {action.dest_path}")
 
-                # Icons are the "desktop": draw them first, hands/cursor on top.
-                draw_icons(frame, icon_manager)
+                # Cancel triggers: open-palm hold (rising edge) on any hand.
+                if any(g.open_palm_just_held for g in gestures):
+                    cancelled = actions.cancel_all()
+                    if cancelled:
+                        print(f"[jarvis-vision] open-palm cancel: {cancelled} action(s) discarded")
+
+                # Tick the safety countdown; commit whatever expired.
+                actions.update(now)
+                if icon_manager is not None:
+                    for removed in icon_manager.remove_committed():
+                        print(f"[jarvis-vision] committed: {removed.real_path.name}")
+
+                # -- render -------------------------------------------------
+                draw_drop_zones(frame, icon_manager, gestures)
+                draw_icons(frame, icon_manager)          # the "desktop"
+                draw_pending(frame, actions.pending, now)
 
                 for gesture in gestures:
                     draw_skeleton(frame, gesture.landmarks_px, gesture.handedness)
                     draw_pinch(frame, gesture)
 
-                actions.update(time.perf_counter())  # no-op stub until M5
-
-                now = time.perf_counter()
                 delta = now - last_time
                 last_time = now
                 if delta > 0:
@@ -322,12 +433,16 @@ def main(argv: list[str] | None = None) -> int:
                               + (1 - config.FPS_SMOOTHING_ALPHA) * fps)
                     )
 
-                draw_hud(frame, fps, gestures, icon_manager)
+                draw_hud(frame, fps, gestures, icon_manager, actions)
                 cv2.imshow(config.WINDOW_NAME, frame)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):  # q or ESC
                     break
+                if key == 32:  # SPACE -- dev/testing cancel fallback
+                    cancelled = actions.cancel_all()
+                    if cancelled:
+                        print(f"[jarvis-vision] SPACE cancel: {cancelled} action(s) discarded")
 
                 # Closing the window with the X button should also exit.
                 if cv2.getWindowProperty(config.WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:

@@ -4,15 +4,16 @@ libraries -- pixel arithmetic and per-hand state machines only.
 
 M2 scope: the thumb-index PINCH with a hysteresis state machine, fed strictly
 from post-smoothing landmarks.
+M5 scope: open-palm "cancel" -- every fingertip spread far from the wrist,
+held briefly.
 
 Later milestones plug in here:
-  * M4 -- grab/drag consumes `just_pinched` / `just_released` + `pinch_point`
-  * M5 -- open-palm "cancel" detection (all 5 fingertip->wrist spreads high)
   * M6 -- two-hand resize (distance between two pinch points inside one icon)
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -77,6 +78,48 @@ class PinchDetector:
         self.just_released = False
 
 
+class OpenPalmDetector:
+    """Per-hand "all five fingers spread" detector with a hold timer.
+
+    Spread is measured as (fingertip -> wrist) / (wrist -> middle-finger MCP),
+    so it is scale-invariant. The palm must read open for HOLD_SECONDS before
+    `held` latches true; `just_held` is the single frame it latches.
+    """
+
+    def __init__(self, spread_ratio: float, hold_seconds: float) -> None:
+        self.spread_ratio = float(spread_ratio)
+        self.hold_seconds = float(hold_seconds)
+
+        self.open_now = False
+        self.held = False
+        self.just_held = False
+        self._open_since: float | None = None
+
+    def update(self, landmarks_px: np.ndarray, now: float) -> None:
+        wrist = landmarks_px[config.WRIST]
+        palm_ref = float(np.hypot(*(landmarks_px[config.MIDDLE_MCP] - wrist)))
+
+        if palm_ref > 1e-3:
+            self.open_now = all(
+                float(np.hypot(*(landmarks_px[tip] - wrist))) / palm_ref
+                >= self.spread_ratio
+                for tip in config.FINGERTIPS
+            )
+        else:
+            self.open_now = False
+
+        was_held = self.held
+        if self.open_now:
+            if self._open_since is None:
+                self._open_since = now
+            self.held = (now - self._open_since) >= self.hold_seconds
+        else:
+            self._open_since = None
+            self.held = False
+
+        self.just_held = self.held and not was_held
+
+
 @dataclass
 class HandGesture:
     """This frame's gesture readout for one hand."""
@@ -88,6 +131,8 @@ class HandGesture:
     pinch_point: np.ndarray           # (2,) smoothed thumb/index midpoint
     just_pinched: bool                # IDLE -> PINCHING this frame
     just_released: bool               # PINCHING -> IDLE this frame
+    open_palm: bool = False           # 5 fingers spread, held long enough
+    open_palm_just_held: bool = False # the frame open_palm latched true
 
 
 class _HandSlot:
@@ -97,6 +142,9 @@ class _HandSlot:
         self.smoother = HandSmoother(config.EMA_ALPHA)
         self.pinch = PinchDetector(
             config.PINCH_ENTER_THRESHOLD_PX, config.PINCH_EXIT_THRESHOLD_PX
+        )
+        self.palm = OpenPalmDetector(
+            config.OPEN_PALM_SPREAD_RATIO, config.OPEN_PALM_HOLD_SECONDS
         )
 
 
@@ -113,8 +161,13 @@ class GestureEngine:
         self._slots: dict[str, _HandSlot] = {}
 
     def update(
-        self, hands: list[Hand], frame_shape: tuple[int, ...]
+        self,
+        hands: list[Hand],
+        frame_shape: tuple[int, ...],
+        now: float | None = None,
     ) -> list[HandGesture]:
+        if now is None:
+            now = time.perf_counter()
         frame_width = frame_shape[1]
         seen: set[str] = set()
         gestures: list[HandGesture] = []
@@ -138,6 +191,7 @@ class GestureEngine:
             index = smoothed[config.INDEX_TIP]
             distance = float(np.hypot(thumb[0] - index[0], thumb[1] - index[1]))
             state = slot.pinch.update(distance)
+            slot.palm.update(smoothed, now)
 
             gestures.append(
                 HandGesture(
@@ -148,6 +202,8 @@ class GestureEngine:
                     pinch_point=(thumb + index) * 0.5,
                     just_pinched=slot.pinch.just_entered,
                     just_released=slot.pinch.just_released,
+                    open_palm=slot.palm.held,
+                    open_palm_just_held=slot.palm.just_held,
                 )
             )
 

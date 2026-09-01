@@ -75,12 +75,30 @@ PINCH_EXIT_THRESHOLD_PX = 55   # distance to END a pinch -- the hysteresis gap
 
 EMA_ALPHA = 0.4  # smoothing: higher = more responsive, less smooth
 
+# Open-palm "cancel" gesture (M5). A hand counts as open when EVERY fingertip
+# sits far from the wrist relative to the palm length -- i.e.
+#   (fingertip -> wrist) / (wrist -> middle-finger MCP)  >=  OPEN_PALM_SPREAD_RATIO
+# for all five tips. A ratio (not a raw pixel distance) keeps the test working
+# as the hand moves nearer to / further from the camera. Held for
+# OPEN_PALM_HOLD_SECONDS it cancels every pending action.
+OPEN_PALM_SPREAD_RATIO = 1.5
+OPEN_PALM_HOLD_SECONDS = 0.3
+
 
 # ---------------------------------------------------------------------------
 # Staged actions / safety layer  (M5)
 # ---------------------------------------------------------------------------
 
 PENDING_ACTION_SECONDS = 1.5  # HUD countdown before a drop commits
+
+# Drop zones: one per sub-folder of the opened folder (action = move), plus a
+# single always-present trash zone (action = quarantine -> soft delete into
+# QUARANTINE_DIR, never a real delete). Laid out in a band along the bottom.
+DROP_ZONE_SIZE_PX = (155, 92)
+DROP_ZONE_GAP_PX = 14
+DROP_ZONE_BOTTOM_MARGIN_PX = 46   # clears the two-line HUD footer
+DROP_ZONE_SIDE_MARGIN_PX = 12
+MAX_FOLDER_DROP_ZONES = 5         # extra sub-folders simply get no zone
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +166,20 @@ ICON_BORDER_THICKNESS_PX = 2
 ICON_CORNER_PX = 14                     # size of the folded corner triangle
 ICON_FILL_ALPHA = 0.55                  # icon card translucency over the feed
 
+# Drop zones + pending-action HUD (M5).
+COLOR_DROP_FOLDER = (190, 130, 40)      # blue-ish -- "move here"
+COLOR_DROP_TRASH = (50, 50, 205)        # red-ish  -- "quarantine"
+COLOR_DROP_ZONE_HOT = (0, 235, 235)     # cyan highlight when an icon hovers it
+COLOR_DROP_ZONE_LABEL = (255, 255, 255)
+DROP_ZONE_BORDER_PX = 2
+DROP_ZONE_FILL_ALPHA = 0.35
+
+COLOR_PENDING_BOX = (0, 220, 255)       # yellow (BGR) -- staged-action highlight
+COLOR_PENDING_TEXT = (0, 220, 255)
+PENDING_BOX_INFLATE_PX = 9
+PENDING_BOX_THICKNESS_PX = 3
+PENDING_COUNTDOWN_FONT_SCALE = 1.1
+
 
 # ---------------------------------------------------------------------------
 # Hand topology
@@ -157,6 +189,7 @@ ICON_FILL_ALPHA = 0.55                  # icon card translucency over the feed
 WRIST = 0
 THUMB_TIP = 4
 INDEX_TIP = 8
+MIDDLE_MCP = 9   # base knuckle of the middle finger -- palm-length reference
 MIDDLE_TIP = 12
 RING_TIP = 16
 PINKY_TIP = 20

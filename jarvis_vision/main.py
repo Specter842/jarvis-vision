@@ -161,10 +161,17 @@ def draw_hud(
         (12, 48), config.COLOR_TEXT, config.HUD_FONT_SCALE,
     )
     if icon_manager is not None:
+        held = [ic for ic in icon_manager if ic.grabbed]
+        summary = f"{len(icon_manager)} icons  <- {icon_manager.source_folder}"
+        if held:
+            summary += "   holding: " + ", ".join(
+                f"{ic.label} ({ic.grabbed_by})" for ic in held
+            )
         _text(
-            frame,
-            f"{len(icon_manager)} icons  <- {icon_manager.source_folder}",
-            (12, frame.shape[0] - 36), config.COLOR_TEXT, config.HUD_FONT_SCALE,
+            frame, summary,
+            (12, frame.shape[0] - 36),
+            config.COLOR_PINCH_ACTIVE if held else config.COLOR_TEXT,
+            config.HUD_FONT_SCALE,
         )
 
     y = 70
@@ -179,7 +186,7 @@ def draw_hud(
         y += 22
 
     _text(
-        frame, "M3: file icons (view only)  |  q / ESC to quit",
+        frame, "M4: drag (screen only, no file writes)  |  q / ESC to quit",
         (12, frame.shape[0] - 14), config.COLOR_TEXT, config.HUD_FONT_SCALE,
     )
 
@@ -290,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
                 timestamp_ms = int((time.perf_counter() - start_time) * 1000)
                 hands = tracker.process(frame, timestamp_ms)
                 gestures = engine.update(hands, frame.shape)
+
+                # Grab / drag / release. Screen position only -- no file writes.
+                if icon_manager is not None:
+                    icon_manager.apply_gestures(gestures)
 
                 # Icons are the "desktop": draw them first, hands/cursor on top.
                 draw_icons(frame, icon_manager)

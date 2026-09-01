@@ -83,7 +83,7 @@ path, destination path.
 - [x] **M1** — webcam feed + 21-point hand skeleton overlay, un-mirrored
 - [x] **M2** — pinch detection + hysteresis + EMA smoothing, on-screen state indicator
 - [x] **M3** — file icons from a real folder (visualization only)
-- [ ] **M4** — drag (screen position only, no filesystem writes)
+- [x] **M4** — drag (screen position only, no filesystem writes)
 - [ ] **M5** — real file operations through the staged-action safety layer
 - [ ] **M6** — two-hand resize
 - [ ] **M7** — polish: 5+ files, FPS logging, threshold tuning

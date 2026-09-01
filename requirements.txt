@@ -1,0 +1,16 @@
+# JARVIS-Vision v0.1
+#
+# Install into the project venv:
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# NOTE on OpenCV: the spec calls for `opencv-python`, but mediapipe 1.0.1
+# declares a hard dependency on `opencv-contrib-python`. Both packages install
+# the same `cv2` module and collide if installed together, so we take
+# mediapipe's choice. It is a strict superset -- every cv2 call in this project
+# is identical under either package.
+
+mediapipe==1.0.1
+numpy==2.5.2
+
+# Pulled in transitively by mediapipe, pinned here for reproducibility:
+opencv-contrib-python==5.0.0.93

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# JARVIS-Vision runtime artifacts
+jarvis_vision/hand_landmarker.task
+jarvis_vision/quarantine/
+jarvis_vision/actions.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

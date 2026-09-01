@@ -30,7 +30,17 @@ def main() -> int:
 
     DEST.parent.mkdir(parents=True, exist_ok=True)
     print(f"downloading {MODEL_URL}")
-    urllib.request.urlretrieve(MODEL_URL, DEST)
+    # Download to a temp path and rename only on success, so an interrupted
+    # transfer never leaves a truncated .task file that MediaPipe then fails
+    # to load with an opaque error.
+    tmp = DEST.with_suffix(DEST.suffix + ".part")
+    urllib.request.urlretrieve(MODEL_URL, tmp)
+    size = tmp.stat().st_size
+    if size < 1_000_000:  # the real bundle is ~7.6 MB; anything tiny is an error page
+        tmp.unlink(missing_ok=True)
+        print(f"download looks wrong: only {size} bytes, expected ~7.6 MB", file=sys.stderr)
+        return 1
+    tmp.replace(DEST)
     print(f"saved {DEST} ({DEST.stat().st_size / 1_048_576:.1f} MB)")
     return 0
 

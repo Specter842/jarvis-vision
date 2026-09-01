@@ -137,10 +137,20 @@ class ActionManager:
         dest = action.dest_path
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
+            # shutil.move raises shutil.Error (not OSError) on a dest-name
+            # collision or a move-into-self; catch both so a failed commit
+            # surfaces as the FAILED HUD state instead of killing the loop.
             shutil.move(str(src), str(dest))
-        except OSError as exc:
+        except (OSError, shutil.Error) as exc:
             action.hud_state = HudState.FAILED
-            action.icon.pending = False
+            # If the source is already gone the move partially succeeded (or
+            # something else took it): drop the icon rather than leaving a
+            # draggable card pointing at a path that no longer exists.
+            if not src.exists():
+                action.icon.pending = False
+                action.icon.committed = True
+            else:
+                action.icon.pending = False
             print(f"[jarvis-vision] action failed: {src} -> {dest}: {exc}", file=sys.stderr)
             return
 

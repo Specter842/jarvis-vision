@@ -1,20 +1,26 @@
 """
-JARVIS-Vision v0.1 -- Milestone 2: pinch detection + hysteresis + EMA smoothing.
+JARVIS-Vision v0.1 -- Milestone 3: file icons from a real folder (view only).
 
 Top-level orchestration only: open the camera, pump frames through the hand
-tracker and the gesture engine, draw the result, show it. No file operations --
-actions.py is imported and instantiated but does nothing this milestone.
+tracker and the gesture engine, draw the result, show it. No file operations
+and no interaction with the icons yet -- actions.py and the icon hit-testing
+are wired but inert this milestone.
 
 Run:
-    .venv\\Scripts\\python jarvis_vision\\main.py
+    .venv\\Scripts\\python jarvis_vision\\main.py PATH\\TO\\FOLDER
+
+The folder argument is optional; without it you get the M2 pinch demo with no
+icons.
 
 Quit with `q` or ESC.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -22,6 +28,7 @@ import numpy as np
 import config
 from actions import ActionManager
 from gestures import GestureEngine, HandGesture, PinchState
+from icons import FileIcon, IconManager
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +107,51 @@ def draw_pinch(frame: np.ndarray, gesture: HandGesture) -> None:
     )
 
 
-def draw_hud(frame: np.ndarray, fps: float, gestures: list[HandGesture]) -> None:
+def draw_icon(frame: np.ndarray, icon: FileIcon) -> None:
+    """Draw one file card: translucent body, border, folded corner, name below."""
+    left, top, right, bottom = (int(round(v)) for v in icon.bbox)
+    corner = config.ICON_CORNER_PX
+
+    # Translucent fill: blend a solid rectangle with the underlying feed so the
+    # camera image still reads through the icon.
+    roi = frame[max(top, 0):max(bottom, 0), max(left, 0):max(right, 0)]
+    if roi.size:
+        fill = np.full_like(roi, config.COLOR_ICON_FILL, dtype=np.uint8)
+        cv2.addWeighted(fill, config.ICON_FILL_ALPHA, roi, 1 - config.ICON_FILL_ALPHA, 0, roi)
+
+    border_color = (
+        config.COLOR_ICON_GRABBED_BORDER if icon.grabbed
+        else config.COLOR_ICON_BORDER
+    )
+    cv2.rectangle(frame, (left, top), (right, bottom), border_color,
+                  config.ICON_BORDER_THICKNESS_PX, cv2.LINE_AA)
+
+    # Folded top-right corner.
+    cv2.line(frame, (right - corner, top), (right, top + corner),
+             config.COLOR_ICON_CORNER, config.ICON_BORDER_THICKNESS_PX, cv2.LINE_AA)
+
+    # Filename, centred under the card.
+    (text_w, _), _ = cv2.getTextSize(
+        icon.label, cv2.FONT_HERSHEY_SIMPLEX, config.HUD_FONT_SCALE, config.FONT_THICKNESS
+    )
+    text_x = int(icon.center[0] - text_w / 2)
+    text_y = bottom + 16
+    _text(frame, icon.label, (text_x, text_y), config.COLOR_ICON_LABEL, config.HUD_FONT_SCALE)
+
+
+def draw_icons(frame: np.ndarray, icon_manager: IconManager | None) -> None:
+    if icon_manager is None:
+        return
+    for icon in icon_manager:
+        draw_icon(frame, icon)
+
+
+def draw_hud(
+    frame: np.ndarray,
+    fps: float,
+    gestures: list[HandGesture],
+    icon_manager: IconManager | None,
+) -> None:
     """Top-left status readout + milestone banner."""
     _text(frame, f"FPS {fps:5.1f}", (12, 26), config.COLOR_TEXT, config.HUD_FONT_SCALE)
     _text(
@@ -109,6 +160,12 @@ def draw_hud(frame: np.ndarray, fps: float, gestures: list[HandGesture]) -> None
         f"  alpha {config.EMA_ALPHA}",
         (12, 48), config.COLOR_TEXT, config.HUD_FONT_SCALE,
     )
+    if icon_manager is not None:
+        _text(
+            frame,
+            f"{len(icon_manager)} icons  <- {icon_manager.source_folder}",
+            (12, frame.shape[0] - 36), config.COLOR_TEXT, config.HUD_FONT_SCALE,
+        )
 
     y = 70
     for gesture in gestures:
@@ -122,7 +179,7 @@ def draw_hud(frame: np.ndarray, fps: float, gestures: list[HandGesture]) -> None
         y += 22
 
     _text(
-        frame, "M2: pinch + hysteresis + EMA  |  q / ESC to quit",
+        frame, "M3: file icons (view only)  |  q / ESC to quit",
         (12, frame.shape[0] - 14), config.COLOR_TEXT, config.HUD_FONT_SCALE,
     )
 
@@ -157,11 +214,40 @@ def open_camera() -> cv2.VideoCapture:
 
 
 # ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="jarvis-vision",
+        description="Gesture-controlled file interface (v0.1, on-screen only).",
+    )
+    parser.add_argument(
+        "folder",
+        nargs="?",
+        type=Path,
+        help="folder whose files are shown as draggable icons (M3+). "
+        "Omit for the pinch demo with no icons.",
+    )
+    return parser.parse_args(argv)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    folder: Path | None = None
+    if args.folder is not None:
+        folder = args.folder.expanduser()
+        if not folder.is_dir():
+            print(f"[jarvis-vision] not a folder: {folder}", file=sys.stderr)
+            return 2
+
     capture = open_camera()
     actual_w = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -169,7 +255,8 @@ def main() -> int:
     print(f"[jarvis-vision] mirror={config.MIRROR_FRAME} swap_handedness={config.SWAP_HANDEDNESS}")
 
     engine = GestureEngine()
-    actions = ActionManager()  # M2: instantiated to prove the wiring; no-op until M5
+    actions = ActionManager()  # instantiated to prove the wiring; no-op until M5
+    icon_manager: IconManager | None = None  # built on the first frame, once size is known
 
     fps = 0.0
     last_time = time.perf_counter()
@@ -194,9 +281,18 @@ def main() -> int:
                 if config.MIRROR_FRAME:
                     frame = cv2.flip(frame, 1)
 
+                # Lay out icons once we know the true displayed frame size
+                # (the driver may ignore the requested capture resolution).
+                if folder is not None and icon_manager is None:
+                    icon_manager = IconManager.from_folder(folder, frame.shape)
+                    print(f"[jarvis-vision] loaded {len(icon_manager)} icons from {folder}")
+
                 timestamp_ms = int((time.perf_counter() - start_time) * 1000)
                 hands = tracker.process(frame, timestamp_ms)
                 gestures = engine.update(hands, frame.shape)
+
+                # Icons are the "desktop": draw them first, hands/cursor on top.
+                draw_icons(frame, icon_manager)
 
                 for gesture in gestures:
                     draw_skeleton(frame, gesture.landmarks_px, gesture.handedness)
@@ -215,7 +311,7 @@ def main() -> int:
                               + (1 - config.FPS_SMOOTHING_ALPHA) * fps)
                     )
 
-                draw_hud(frame, fps, gestures)
+                draw_hud(frame, fps, gestures, icon_manager)
                 cv2.imshow(config.WINDOW_NAME, frame)
 
                 key = cv2.waitKey(1) & 0xFF
@@ -234,4 +330,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

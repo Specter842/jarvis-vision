@@ -92,6 +92,13 @@ ICON_SIZE_PX = (80, 80)
 RESIZE_MIN_PX = 40   # two-hand resize clamp, lower bound (M6)
 RESIZE_MAX_PX = 240  # two-hand resize clamp, upper bound (M6)
 
+# Grid layout for icons loaded from a folder (M3). Positions are in displayed-
+# frame pixel space and recomputed whenever the frame size is known.
+ICON_GRID_ORIGIN_PX = (40, 130)   # top-left of the first icon; clears the HUD
+ICON_GRID_SPACING_PX = 28         # gap between icon cells, both axes
+ICON_LABEL_GAP_PX = 20            # vertical room reserved under each icon for its name
+ICON_LABEL_MAX_CHARS = 16         # longer names get middle-truncated with an ellipsis
+
 
 # ---------------------------------------------------------------------------
 # Performance
@@ -129,6 +136,17 @@ COLOR_PINCH_ACTIVE = (0, 255, 0)        # green -- PINCHING
 PINCH_POINT_RADIUS_PX = 14
 PINCH_LINE_THICKNESS_IDLE = 2
 PINCH_LINE_THICKNESS_ACTIVE = 4
+
+# File icons (M3). Drawn as a filled card with a border and a folded corner,
+# name centred underneath.
+COLOR_ICON_FILL = (48, 42, 36)          # dark slate
+COLOR_ICON_BORDER = (210, 210, 210)     # light grey
+COLOR_ICON_CORNER = (150, 150, 150)     # folded-corner accent
+COLOR_ICON_LABEL = (255, 255, 255)      # white
+COLOR_ICON_GRABBED_BORDER = (0, 255, 0) # green while grabbed (unused until M4)
+ICON_BORDER_THICKNESS_PX = 2
+ICON_CORNER_PX = 14                     # size of the folded corner triangle
+ICON_FILL_ALPHA = 0.55                  # icon card translucency over the feed
 
 
 # ---------------------------------------------------------------------------

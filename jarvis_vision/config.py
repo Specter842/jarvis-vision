@@ -121,6 +121,15 @@ FONT_SCALE = 0.6
 FONT_THICKNESS = 1
 HUD_FONT_SCALE = 0.55
 
+# Pinch indicator (M2). The circle sits on the pinch point (thumb/index
+# midpoint) and switches colour on the state-machine transition, NOT on the
+# raw distance -- that is what the hysteresis gap buys us.
+COLOR_PINCH_IDLE = (255, 255, 255)      # white -- IDLE
+COLOR_PINCH_ACTIVE = (0, 255, 0)        # green -- PINCHING
+PINCH_POINT_RADIUS_PX = 14
+PINCH_LINE_THICKNESS_IDLE = 2
+PINCH_LINE_THICKNESS_ACTIVE = 4
+
 
 # ---------------------------------------------------------------------------
 # Hand topology

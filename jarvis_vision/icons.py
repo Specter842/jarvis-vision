@@ -15,6 +15,7 @@ does that, only after the safety countdown.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -198,11 +199,23 @@ class IconManager:
     # -- layout ----------------------------------------------------------------
 
     def layout_grid(self, frame_shape: tuple[int, ...]) -> None:
-        """Place icons in a top-left grid and drop zones in a bottom band."""
+        """Place icons in a top-left grid and drop zones in a bottom band.
+
+        The grid uses as many columns as the frame width allows (fewest rows),
+        then scales the whole grid -- icons and spacing together -- down to fit
+        the height between the HUD and the drop-zone band. So no matter how
+        many files the folder holds, icons never overlap each other, the HUD,
+        the drop zones, or the frame edge.
+        """
         self.frame_shape = frame_shape
         frame_h, frame_w = frame_shape[0], frame_shape[1]
 
+        # Drop zones first -- their real (post-scale) top bounds the icon grid.
+        self._layout_drop_zones(frame_shape)
+        band_top = min((z.y for z in self.drop_zones), default=float(frame_h))
+
         origin_x, origin_y = config.ICON_GRID_ORIGIN_PX
+        origin_y = min(origin_y, int(frame_h * 0.22))  # don't waste a short frame
         gap = config.ICON_GRID_SPACING_PX
         label_gap = config.ICON_LABEL_GAP_PX
         iw, ih = config.ICON_SIZE_PX
@@ -212,25 +225,43 @@ class IconManager:
 
         usable_w = max(cell_w, frame_w - origin_x - gap)
         columns = max(1, int(usable_w // cell_w))
+        if self.icons:
+            columns = min(columns, len(self.icons))
+        rows = max(1, math.ceil(len(self.icons) / columns))
+
+        # Fit always wins: with a huge folder the icons get small, but they
+        # never overlap, leave the frame, or run into the drop-zone band.
+        grid_area_h = max(1.0, band_top - origin_y - 12)
+        scale = min(1.0, grid_area_h / (rows * cell_h))
+
+        cw, ch = cell_w * scale, cell_h * scale
+        w, h = iw * scale, ih * scale
 
         for i, icon in enumerate(self.icons):
             row, col = divmod(i, columns)
-            icon.x = float(origin_x + col * cell_w)
-            icon.y = float(origin_y + row * cell_h)
-            icon.w = float(iw)
-            icon.h = float(ih)
+            icon.x = float(origin_x + col * cw)
+            icon.y = float(origin_y + row * ch)
+            icon.w = float(w)
+            icon.h = float(h)
             icon.home = (icon.x, icon.y)
 
-        self._layout_drop_zones(frame_shape)
-
     def _layout_drop_zones(self, frame_shape: tuple[int, ...]) -> None:
-        """A single row along the bottom: folders from the left, trash last."""
+        """A single row along the bottom: folders from the left, trash last.
+
+        The row is scaled to fit the frame width so every zone stays on screen
+        no matter how many sub-folders there are.
+        """
         frame_h, frame_w = frame_shape[0], frame_shape[1]
         zw, zh = config.DROP_ZONE_SIZE_PX
         gap = config.DROP_ZONE_GAP_PX
         side = config.DROP_ZONE_SIDE_MARGIN_PX
-        y = float(frame_h - config.DROP_ZONE_BOTTOM_MARGIN_PX - zh)
 
+        n_folder = sum(1 for z in self.drop_zones if z.kind == "folder")
+        natural = n_folder * (zw + gap) + zw + 2 * side
+        scale = min(1.0, frame_w / natural) if natural > 0 else 1.0
+        zw, zh, gap = zw * scale, zh * scale, gap * scale
+
+        y = float(frame_h - config.DROP_ZONE_BOTTOM_MARGIN_PX - zh)
         x = float(side)
         for zone in self.drop_zones:
             zone.w, zone.h, zone.y = float(zw), float(zh), y

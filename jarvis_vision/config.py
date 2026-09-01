@@ -69,11 +69,19 @@ MIN_TRACKING_CONFIDENCE = 0.5
 # ---------------------------------------------------------------------------
 # Gesture thresholds  (M2+)
 # ---------------------------------------------------------------------------
+#
+# Final tuned values -- see the "Tuning" section of README.md for the full
+# rationale. Short version:
+#   * The 15 px hysteresis gap (40 -> 55) is what stops pinch flicker, so the
+#     EMA does not have to be heavy.
+#   * EMA_ALPHA 0.5: ~110 ms to 90% of a step at 30 fps -- responsive drag,
+#     still halves single-frame landmark jitter. Above ~0.6 the pinch point
+#     visibly wobbles at rest.
 
 PINCH_ENTER_THRESHOLD_PX = 40  # thumb-tip/index-tip distance to START a pinch
 PINCH_EXIT_THRESHOLD_PX = 55   # distance to END a pinch -- the hysteresis gap
 
-EMA_ALPHA = 0.4  # smoothing: higher = more responsive, less smooth
+EMA_ALPHA = 0.5  # smoothing: higher = more responsive, less smooth (M7: 0.4 -> 0.5)
 
 # Open-palm "cancel" gesture (M5). A hand counts as open when EVERY fingertip
 # sits far from the wrist relative to the palm length -- i.e.
@@ -114,8 +122,10 @@ RESIZE_MAX_PX = 240  # two-hand resize clamp, upper bound (M6)
 RESIZE_MIN_BASELINE_PX = 24
 
 # Grid layout for icons loaded from a folder (M3). Positions are in displayed-
-# frame pixel space and recomputed whenever the frame size is known.
-ICON_GRID_ORIGIN_PX = (40, 130)   # top-left of the first icon; clears the HUD
+# frame pixel space and recomputed whenever the frame size is known. The grid
+# is scaled down to fit between the HUD and the drop-zone band when there are
+# too many files for full size (M7) -- so it never overlaps or runs off-screen.
+ICON_GRID_ORIGIN_PX = (40, 150)   # top-left of the first icon; clears the HUD
 ICON_GRID_SPACING_PX = 28         # gap between icon cells, both axes
 ICON_LABEL_GAP_PX = 20            # vertical room reserved under each icon for its name
 ICON_LABEL_MAX_CHARS = 16         # longer names get middle-truncated with an ellipsis
@@ -127,7 +137,8 @@ ICON_LABEL_MAX_CHARS = 16         # longer names get middle-truncated with an el
 
 TARGET_FPS_WARN_THRESHOLD = 20  # warn if measured fps drops below this
 
-FPS_SMOOTHING_ALPHA = 0.1  # EMA over the on-screen fps readout so it is legible
+FPS_SMOOTHING_ALPHA = 0.1       # EMA over the on-screen fps readout so it is legible
+FPS_LOG_INTERVAL_SECONDS = 5.0  # how often to log measured fps (and any warning)
 
 
 # ---------------------------------------------------------------------------

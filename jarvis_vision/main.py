@@ -370,6 +370,9 @@ def main(argv: list[str] | None = None) -> int:
     actual_h = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"[jarvis-vision] camera {config.CAMERA_INDEX} open at {actual_w}x{actual_h}")
     print(f"[jarvis-vision] mirror={config.MIRROR_FRAME} swap_handedness={config.SWAP_HANDEDNESS}")
+    print(f"[jarvis-vision] tuning: EMA_ALPHA={config.EMA_ALPHA} "
+          f"pinch enter/exit={config.PINCH_ENTER_THRESHOLD_PX}/{config.PINCH_EXIT_THRESHOLD_PX}px "
+          f"pending={config.PENDING_ACTION_SECONDS}s")
 
     engine = GestureEngine()
     actions = ActionManager()
@@ -378,6 +381,12 @@ def main(argv: list[str] | None = None) -> int:
     fps = 0.0
     last_time = time.perf_counter()
     start_time = last_time
+
+    # FPS accounting for the periodic log + shutdown summary.
+    frame_count = 0
+    fps_min = float("inf")
+    fps_max = 0.0
+    last_fps_log = last_time
 
     try:
         # HandTracker imports mediapipe, which is slow -- do it inside main so
@@ -448,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 delta = now - last_time
                 last_time = now
+                frame_count += 1
                 if delta > 0:
                     instant = 1.0 / delta
                     fps = (
@@ -455,6 +465,19 @@ def main(argv: list[str] | None = None) -> int:
                         else (config.FPS_SMOOTHING_ALPHA * instant
                               + (1 - config.FPS_SMOOTHING_ALPHA) * fps)
                     )
+                    # Ignore the first ~15 frames -- model warm-up skews them.
+                    if frame_count > 15:
+                        fps_min = min(fps_min, fps)
+                        fps_max = max(fps_max, fps)
+
+                # Periodic FPS log + sub-threshold warning (rate-limited).
+                if now - last_fps_log >= config.FPS_LOG_INTERVAL_SECONDS:
+                    last_fps_log = now
+                    if fps < config.TARGET_FPS_WARN_THRESHOLD and frame_count > 15:
+                        print(f"[jarvis-vision] WARNING: fps {fps:.1f} below "
+                              f"target {config.TARGET_FPS_WARN_THRESHOLD}", file=sys.stderr)
+                    else:
+                        print(f"[jarvis-vision] fps {fps:.1f} ({frame_count} frames)")
 
                 draw_hud(frame, fps, gestures, icon_manager, actions)
                 cv2.imshow(config.WINDOW_NAME, frame)
@@ -474,6 +497,15 @@ def main(argv: list[str] | None = None) -> int:
         capture.release()
         cv2.destroyAllWindows()
 
+    elapsed = time.perf_counter() - start_time
+    avg = frame_count / elapsed if elapsed > 0 else 0.0
+    lo = fps_min if fps_min != float("inf") else 0.0
+    print(f"[jarvis-vision] session: {frame_count} frames in {elapsed:.1f}s  "
+          f"fps avg {avg:.1f}  min {lo:.1f}  max {fps_max:.1f}")
+    if avg and avg < config.TARGET_FPS_WARN_THRESHOLD:
+        print(f"[jarvis-vision] NOTE: average fps was below the "
+              f"{config.TARGET_FPS_WARN_THRESHOLD} target -- try a lower capture "
+              f"resolution (CAPTURE_WIDTH/HEIGHT in config.py).", file=sys.stderr)
     print("[jarvis-vision] shut down cleanly")
     return 0
 
